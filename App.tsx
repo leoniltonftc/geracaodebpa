@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import HeaderForm from './components/HeaderForm';
 import DataInput from './components/DataInput';
 import LandingPage from './components/LandingPage';
@@ -15,6 +15,27 @@ const App: React.FC = () => {
   const [items, setItems] = useState<BpaItem[]>([]);
   const [generatedContent, setGeneratedContent] = useState<string>('');
   const [showPreview, setShowPreview] = useState(false);
+
+  // Load Header from LocalStorage on mount
+  useEffect(() => {
+    const savedHeader = localStorage.getItem('bpa_header_config');
+    if (savedHeader) {
+      try {
+        const parsed = JSON.parse(savedHeader);
+        // Merge with default to ensure all fields exist even if version changes
+        setHeaderData({ ...DEFAULT_HEADER, ...parsed });
+      } catch (e) {
+        console.error("Failed to load header config", e);
+      }
+    }
+  }, []);
+
+  // Save Header to LocalStorage on change
+  useEffect(() => {
+    if (headerData !== DEFAULT_HEADER) {
+      localStorage.setItem('bpa_header_config', JSON.stringify(headerData));
+    }
+  }, [headerData]);
 
   const handleGenerate = () => {
     const content = generateBpaFileContent(headerData, items);

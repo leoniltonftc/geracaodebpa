@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BpaItem, EXAMPLE_CSV, ColumnMapping } from '../types';
 import { parseMappedData } from '../utils/formatter';
-import { Table, ClipboardPaste, Trash2, ArrowRight, Check, Settings2, Grid3X3, FileText, Link as LinkIcon, Loader2, AlertTriangle } from 'lucide-react';
+import { Table, ClipboardPaste, Trash2, ArrowRight, Check, Settings2, Grid3X3, FileText, Link as LinkIcon, Loader2, AlertTriangle, Save, Edit2 } from 'lucide-react';
 
 interface Props {
   items: BpaItem[];
@@ -13,7 +13,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
   
   // Import State
   const [step, setStep] = useState<1 | 2>(1);
-  const [importMethod, setImportMethod] = useState<'paste' | 'url'>('url'); // Default to URL as requested
+  const [importMethod, setImportMethod] = useState<'paste' | 'url'>('url'); 
   const [rawContent, setRawContent] = useState('');
   
   // Google Sheets State
@@ -28,7 +28,10 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
   const [hasHeaderRow, setHasHeaderRow] = useState(true);
   const [shouldConsolidate, setShouldConsolidate] = useState(true);
   
-  // Defaults for missing columns - Updated per user request
+  // Stats from last import
+  const [importStats, setImportStats] = useState<{ original: number, consolidated: number } | null>(null);
+
+  // Defaults for missing columns
   const [defaults, setDefaults] = useState({
     cnes: '2477963',
     competencia: '',
@@ -38,6 +41,21 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
     quantidade: '1',
     origem: 'EXT'
   });
+
+  // Load Defaults from LocalStorage
+  useEffect(() => {
+    const savedDefaults = localStorage.getItem('bpa_import_defaults');
+    if (savedDefaults) {
+      try {
+        setDefaults(JSON.parse(savedDefaults));
+      } catch(e) { console.error(e); }
+    }
+  }, []);
+
+  // Save Defaults to LocalStorage
+  useEffect(() => {
+    localStorage.setItem('bpa_import_defaults', JSON.stringify(defaults));
+  }, [defaults]);
   
   // Mapping: -1 means "Use Default/Fixed Value"
   const [mapping, setMapping] = useState<ColumnMapping>({
@@ -55,12 +73,28 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
     e.stopPropagation();
     if (window.confirm('Tem certeza que deseja limpar todos os itens?')) {
       onUpdateItems([]);
+      setImportStats(null);
     }
   };
 
   const handleDeleteItem = (index: number) => {
     const newItems = [...items];
     newItems.splice(index, 1);
+    onUpdateItems(newItems);
+  };
+
+  const handleEditItem = (index: number, field: keyof BpaItem, value: string) => {
+    const newItems = [...items];
+    
+    // Basic validation/masking during edit
+    if (field === 'quantidade' || field === 'idade') {
+      newItems[index][field] = value.replace(/[^0-9]/g, '');
+    } else if (field === 'cnes' || field === 'procedimento') {
+      newItems[index][field] = value.replace(/[^0-9]/g, ''); // Keep clean
+    } else {
+      newItems[index][field] = value;
+    }
+    
     onUpdateItems(newItems);
   };
 
@@ -91,7 +125,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
 
     setIsLoadingSheet(true);
 
-    // Construct GViz URL for CSV output
     const csvUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetTabName)}`;
 
     try {
@@ -104,7 +137,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
       const text = await response.text();
       
       if (text.toLowerCase().includes('<!doctype html>') || text.toLowerCase().includes('<html')) {
-         throw new Error('O Google bloqueou o acesso direto. Certifique-se que a planilha está compartilhada como "Qualquer pessoa com o link" ou tente a opção "Colar Dados".');
+         throw new Error('O Google bloqueou o acesso direto. Certifique-se que a planilha está compartilhada como "Qualquer pessoa com o link".');
       }
 
       setRawContent(text);
@@ -124,7 +157,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
     const lines = content.trim().split(/\r?\n/).filter(line => line.trim() !== '');
     if (lines.length === 0) return;
 
-    // Detect delimiter
     const firstLine = lines[0];
     let delimiter = ',';
     if (firstLine.includes('\t')) delimiter = '\t';
@@ -137,7 +169,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
       return line.split(delimiter).map(c => c.trim().replace(/^"|"$/g, ''));
     };
 
-    // Parse first few rows for preview
     const parsedRows = lines.slice(0, 6).map(splitLine);
     
     const headers = hasHeaderRow ? parsedRows[0] : parsedRows[0].map((_, i) => `Dados ${i+1}`);
@@ -149,7 +180,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
     const newMapping = { ...mapping };
     
     headers.forEach((header, index) => {
-      // Normalize header: remove accents, keep alphanumeric (e.g., "BPA MÉDICO" -> "bpamedico")
       const h = header.toLowerCase()
         .normalize("NFD").replace(/[\u0300-\u036f]/g, "") 
         .replace(/[^a-z0-9]/g, "");
@@ -159,29 +189,23 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
       // CNES
       if (h.includes('cnes')) newMapping.cnes = index;
 
-      // Competencia - Prioritize exact "DATA" or common variations
+      // Competencia 
       if (rawH === 'DATA') newMapping.competencia = index;
       else if (newMapping.competencia === -1 && (h.includes('competencia') || h.includes('mes') || h.includes('dt') || h.includes('data'))) newMapping.competencia = index;
 
       // CBO
       if (h.includes('cbo') || h.includes('ocupacao')) newMapping.cbo = index;
 
-      // Procedimento - Prioritize headers like "BPA MEDICO", "BPA ENFERMAGEM", "BPA TEC"
-      // If multiple exist, this logic will pick the last one processed unless we add priority.
-      // However, Step 2 allows the user to correct it.
+      // Procedimento
       if (h.includes('bpamedico') || h.includes('bpaenfermagem') || h.includes('bpatec')) {
-         // If we already found one, maybe stick to the first one or overwrite? 
-         // Let's prioritize: If current map is empty (-1), take it.
          if (newMapping.procedimento === -1) newMapping.procedimento = index;
          else {
-            // If we have BPA MEDICO, keep it? 
-            // Simple logic: Priority to BPA MEDICO if found, otherwise others.
             if (h.includes('bpamedico')) newMapping.procedimento = index; 
          }
       }
       else if (newMapping.procedimento === -1 && (h.includes('procedimento') || h.includes('cod') || h.includes('proc'))) newMapping.procedimento = index;
 
-      // Idade - Prioritize "DATA DE NASCIMENTO"
+      // Idade
       if (h.includes('datadenascimento')) newMapping.idade = index;
       else if (newMapping.idade === -1 && (h.includes('idade') || h.includes('nasc'))) newMapping.idade = index;
 
@@ -197,11 +221,14 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
   };
 
   const handleFinishImport = () => {
-    // Determine the header name of the procedure column to use for context-aware lookup
     let procedureHeaderName = '';
     if (mapping.procedimento !== -1 && detectedHeaders[mapping.procedimento]) {
       procedureHeaderName = detectedHeaders[mapping.procedimento];
     }
+
+    // Get raw count before processing
+    const rawLines = rawContent.trim().split(/\r?\n/).filter(line => line.trim() !== '');
+    const rawCount = hasHeaderRow ? rawLines.length - 1 : rawLines.length;
 
     const newItems = parseMappedData(
       rawContent, 
@@ -209,12 +236,12 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
       hasHeaderRow, 
       defaults, 
       shouldConsolidate,
-      procedureHeaderName // Pass the detected header name
+      procedureHeaderName 
     );
     
     onUpdateItems([...items, ...newItems]);
+    setImportStats({ original: rawCount, consolidated: newItems.length });
     
-    // Reset
     setShowModal(false);
     setRawContent('');
     setStep(1);
@@ -228,7 +255,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
     }));
   };
 
-  // Reusable Column Selector Component
   const ColumnSelector = ({ 
     label, 
     field, 
@@ -273,14 +299,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
             />
           </div>
         )}
-        
-        {!isFixed && (
-          <div className="text-xs text-gray-500 mt-1 truncate">
-             Ex: <span className="font-mono bg-gray-200 px-1 rounded text-gray-700">
-               {previewRows[hasHeaderRow ? 1 : 0]?.[selectedIndex] || '-'}
-             </span>
-          </div>
-        )}
       </div>
     );
   };
@@ -294,7 +312,14 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
           <Table className="w-5 h-5 text-blue-600" />
           <div>
             <h2 className="text-lg font-semibold text-gray-800">Itens do BPA-C</h2>
-            <p className="text-xs text-gray-500">{items.length} registros carregados</p>
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span>{items.length} registros</span>
+              {importStats && (
+                <span className="bg-green-100 text-green-800 px-2 py-0.5 rounded-full text-[10px] font-medium">
+                  Consolidado de {importStats.original}
+                </span>
+              )}
+            </div>
           </div>
         </div>
         
@@ -318,7 +343,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
         </div>
       </div>
 
-      {/* Empty State / Help */}
+      {/* Empty State */}
       {items.length === 0 && (
         <div className="p-8 text-center bg-white flex flex-col items-center justify-center flex-1 min-h-[200px]">
           <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4">
@@ -331,38 +356,92 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
         </div>
       )}
 
-      {/* Data Table */}
+      {/* Data Table with Inline Edit */}
       {items.length > 0 && (
         <div className="overflow-auto flex-1 min-h-[300px] max-h-[600px]">
-          <table className="w-full text-sm text-left text-gray-600">
+          <table className="w-full text-sm text-left text-gray-600 border-collapse">
             <thead className="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0 shadow-sm z-10">
               <tr>
-                <th className="px-4 py-3">#</th>
-                <th className="px-4 py-3">CNES</th>
-                <th className="px-4 py-3">Comp.</th>
-                <th className="px-4 py-3">CBO</th>
-                <th className="px-4 py-3">Procedimento</th>
-                <th className="px-4 py-3">Idade</th>
-                <th className="px-4 py-3">Qtde</th>
-                <th className="px-4 py-3">Origem</th>
-                <th className="px-4 py-3 text-right">Ações</th>
+                <th className="px-3 py-3 w-12">#</th>
+                <th className="px-3 py-3 min-w-[90px]">CNES</th>
+                <th className="px-3 py-3 min-w-[80px]">Comp.</th>
+                <th className="px-3 py-3 min-w-[80px]">CBO</th>
+                <th className="px-3 py-3 min-w-[120px]">Procedimento</th>
+                <th className="px-3 py-3 w-16">Idade</th>
+                <th className="px-3 py-3 w-16">Qtde</th>
+                <th className="px-3 py-3 w-16">Origem</th>
+                <th className="px-3 py-3 w-10 text-right"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {items.map((item, idx) => (
-                <tr key={idx} className="hover:bg-gray-50">
-                  <td className="px-4 py-2 font-mono text-xs text-gray-400">{idx + 1}</td>
-                  <td className="px-4 py-2 font-mono">{item.cnes}</td>
-                  <td className="px-4 py-2 font-mono">{item.competencia}</td>
-                  <td className="px-4 py-2 font-mono">{item.cbo}</td>
-                  <td className="px-4 py-2 font-mono font-medium text-blue-600">{item.procedimento}</td>
-                  <td className="px-4 py-2 font-mono">{item.idade}</td>
-                  <td className="px-4 py-2 font-mono">{item.quantidade}</td>
-                  <td className="px-4 py-2 font-mono">{item.origem}</td>
-                  <td className="px-4 py-2 text-right">
+                <tr key={idx} className="hover:bg-gray-50 group">
+                  <td className="px-3 py-2 font-mono text-xs text-gray-400 bg-white group-hover:bg-gray-50">
+                    {idx + 1}
+                  </td>
+                  <td className="px-1 py-1">
+                    <input 
+                      type="text" 
+                      value={item.cnes}
+                      onChange={(e) => handleEditItem(idx, 'cnes', e.target.value)}
+                      className="w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono hover:bg-white transition-colors"
+                    />
+                  </td>
+                  <td className="px-1 py-1">
+                     <input 
+                      type="text" 
+                      value={item.competencia}
+                      onChange={(e) => handleEditItem(idx, 'competencia', e.target.value)}
+                      className="w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono hover:bg-white transition-colors"
+                    />
+                  </td>
+                  <td className="px-1 py-1">
+                    <input 
+                      type="text" 
+                      value={item.cbo}
+                      onChange={(e) => handleEditItem(idx, 'cbo', e.target.value)}
+                      className={`w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono hover:bg-white transition-colors ${!item.cbo ? 'border border-red-300 bg-red-50' : ''}`}
+                    />
+                  </td>
+                  <td className="px-1 py-1">
+                    <input 
+                      type="text" 
+                      value={item.procedimento}
+                      onChange={(e) => handleEditItem(idx, 'procedimento', e.target.value)}
+                      className={`w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono font-medium text-blue-600 hover:bg-white transition-colors ${!item.procedimento ? 'ring-1 ring-red-400 bg-red-50 placeholder-red-300' : ''}`}
+                      placeholder="Obrigatório"
+                    />
+                  </td>
+                  <td className="px-1 py-1">
+                    <input 
+                      type="text" 
+                      value={item.idade}
+                      maxLength={3}
+                      onChange={(e) => handleEditItem(idx, 'idade', e.target.value)}
+                      className="w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono hover:bg-white transition-colors text-center"
+                    />
+                  </td>
+                  <td className="px-1 py-1">
+                    <input 
+                      type="text" 
+                      value={item.quantidade}
+                      onChange={(e) => handleEditItem(idx, 'quantidade', e.target.value)}
+                      className={`w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono hover:bg-white transition-colors text-center ${item.quantidade === '0' ? 'text-red-500 font-bold' : ''}`}
+                    />
+                  </td>
+                  <td className="px-1 py-1">
+                     <input 
+                      type="text" 
+                      value={item.origem}
+                      onChange={(e) => handleEditItem(idx, 'origem', e.target.value)}
+                      className="w-full bg-transparent border-none focus:ring-1 focus:ring-blue-500 rounded px-2 py-1 text-xs font-mono hover:bg-white transition-colors text-center"
+                    />
+                  </td>
+                  <td className="px-1 py-1 text-right">
                     <button 
                       onClick={() => handleDeleteItem(idx)}
-                      className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors"
+                      className="text-gray-300 hover:text-red-500 p-1 rounded hover:bg-red-50 transition-colors"
+                      title="Excluir linha"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -374,7 +453,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems }) => {
         </div>
       )}
 
-      {/* Smart Import Modal */}
+      {/* Import Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl flex flex-col max-h-[95vh]">
