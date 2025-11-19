@@ -1,0 +1,5 @@
+{
+  "name": "Gerador BPA-C SUS",
+  "description": "Ferramenta web para gerar arquivos de exportação BPA-C (Boletim de Produção Ambulatorial Consolidado) a partir de dados de planilhas, com validação automática e cálculo de hash.",
+  "requestFramePermissions": []
+}
