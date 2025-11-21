@@ -3,13 +3,14 @@ import HeaderForm from './components/HeaderForm';
 import DataInput from './components/DataInput';
 import LandingPage from './components/LandingPage';
 import LearnMore from './components/LearnMore';
+import Login from './components/Login';
 import { BpaHeader, BpaItem, DEFAULT_HEADER, BpaMode } from './types';
 import { generateBpaFileContent } from './utils/formatter';
-import { Download, FileCode2, Activity, Home } from 'lucide-react';
+import { Download, FileCode2, Activity, Home, LogOut } from 'lucide-react';
 
 const App: React.FC = () => {
-  // View state: 'landing' | 'app' | 'learn_more'
-  const [currentView, setCurrentView] = useState<'landing' | 'app' | 'learn_more'>('landing');
+  // View state: 'landing' | 'login' | 'app' | 'learn_more'
+  const [currentView, setCurrentView] = useState<'landing' | 'login' | 'app' | 'learn_more'>('landing');
   
   // App State
   const [mode, setMode] = useState<BpaMode>('BPA-C');
@@ -69,13 +70,22 @@ const App: React.FC = () => {
     document.body.removeChild(element);
   };
 
+  const handleLogout = () => {
+    // Clear sensitive session data if needed, then go back to landing
+    setCurrentView('landing');
+  };
+
   // Render Views
   if (currentView === 'landing') {
-    return <LandingPage onStart={() => setCurrentView('app')} onLearnMore={() => setCurrentView('learn_more')} />;
+    return <LandingPage onStart={() => setCurrentView('login')} onLearnMore={() => setCurrentView('learn_more')} />;
+  }
+
+  if (currentView === 'login') {
+    return <Login onLoginSuccess={() => setCurrentView('app')} onBack={() => setCurrentView('landing')} />;
   }
 
   if (currentView === 'learn_more') {
-    return <LearnMore onBack={() => setCurrentView('landing')} onStart={() => setCurrentView('app')} />;
+    return <LearnMore onBack={() => setCurrentView('landing')} onStart={() => setCurrentView('login')} />;
   }
 
   return (
@@ -93,8 +103,18 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-4">
-             <button onClick={() => setCurrentView('landing')} className="p-2 text-gray-500 hover:bg-gray-100 rounded-full"><Home className="w-5 h-5" /></button>
-             <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-medium border border-green-200">Sistema Ativo</span>
+             <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-gray-100 rounded-full">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span className="text-xs text-gray-600 font-medium">Logado como Admin</span>
+             </div>
+             <button 
+               onClick={handleLogout} 
+               className="flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 px-3 py-2 rounded-lg transition-colors"
+               title="Sair do Sistema"
+             >
+               <LogOut className="w-4 h-4" />
+               <span className="hidden sm:inline">Sair</span>
+             </button>
           </div>
         </div>
       </header>
