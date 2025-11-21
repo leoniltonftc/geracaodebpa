@@ -9,9 +9,10 @@ interface Props {
   onUpdateItems: (items: BpaItem[]) => void;
   mode: BpaMode;
   onModeChange: (mode: BpaMode) => void;
+  headerCompetencia: string;
 }
 
-const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }) => {
+const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange, headerCompetencia }) => {
   const [showModal, setShowModal] = useState(false);
   
   // Import State
@@ -24,6 +25,10 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
   const [sheetTabName, setSheetTabName] = useState('BD_PROCEDIMENTO');
   const [isLoadingSheet, setIsLoadingSheet] = useState(false);
   const [sheetError, setSheetError] = useState('');
+
+  // Lookup State
+  const [profMedicoLookup, setProfMedicoLookup] = useState<Record<string, string>>({}); // Doctor Name -> CNS
+  const [patientAddressLookup, setPatientAddressLookup] = useState<Record<string, string>>({}); // Patient Name -> Address
 
   // Analysis State
   const [detectedHeaders, setDetectedHeaders] = useState<string[]>([]);
@@ -44,9 +49,13 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
     quantidade: '1',
     origem: 'EXT',
     // BPA-I defaults
+    nome_profissional: '',
     cns_profissional: '',
-    ibge_municipio: '2802809',
-    raca: '99'
+    ibge_municipio: '280280', // Fixed to 6 digits per screenshot
+    raca: '03', // Parda default per screenshot
+    cep: '49250000',
+    endereco_bairro: 'CENTRO',
+    telefone: '00000000000' // Default phone
   });
 
   // Load Defaults
@@ -73,9 +82,11 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
     quantidade: -1,
     origem: -1,
     // BPA-I
+    nome_profissional: -1,
     cns_profissional: -1,
     data_atendimento: -1,
     cns_paciente: -1,
+    cpf_paciente: -1, // Added
     sexo: -1,
     ibge_municipio: -1,
     cid: -1,
@@ -94,12 +105,8 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
   }, [mode]);
 
   const handleClear = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (window.confirm('Tem certeza que deseja limpar todos os itens?')) {
-      onUpdateItems([]);
-      setImportStats(null);
-    }
+    onUpdateItems([]);
+    setImportStats(null);
   };
 
   const handleDeleteItem = (index: number) => {
@@ -129,6 +136,82 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
     return match ? match[0] : null;
   };
 
+  // Helper to parse CSV lines considering potential quotes
+  const parseCsvLine = (line: string, delimiter: string) => {
+     // Simple split if delimiter is tab, regex split if comma/semicolon to handle quotes
+     if (delimiter === '\t') return line.split('\t').map(c => c.trim());
+     
+     const regex = new RegExp(`(?:${delimiter}|\\r?\\n|\\r|^)(?:(?:"([^"]*(?:""[^"]*)*)")|([^"${delimiter}\\r\\n]*))`, 'gi');
+     const row: string[] = [];
+     let matches;
+     while ((matches = regex.exec(line))) {
+        // 1st group: quoted value, 2nd group: unquoted value
+        let val = matches[1] ? matches[1].replace(/""/g, '"') : matches[2];
+        if (val !== undefined) row.push(val.trim());
+     }
+     // Filter out the last empty match that regex sometimes creates at end of string
+     if (line.endsWith(delimiter)) row.push(''); 
+     return row.filter(r => r !== undefined); // Regex creates an empty undefined at start sometimes
+  };
+
+  // Helper to parse the secondary Lookup Sheet (PROFISSIONAL_MEDICO or BD_USUARIO)
+  const processLookupSheet = (csvContent: string, type: 'MEDICO' | 'PACIENTE') => {
+    const lines = csvContent.trim().split(/\r?\n/);
+    if (lines.length < 2) return {};
+
+    const delimiter = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') ? ';' : ',');
+    
+    // Normalize headers to remove accents/special chars for matching
+    const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const headers = lines[0].split(delimiter).map(h => normalize(h.replace(/^"|"$/g, '').trim()));
+    
+    // Cleaner logic to remove "DR", "ENF" etc prefixes from names in lookup table
+    const cleanKey = (s: string) => {
+        let key = s.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        key = key.replace(/^DR\s+|^DRA\s+|^ENF\s+|^MEDICO\s+|^MED\s+/, '');
+        return key.trim();
+    };
+
+    if (type === 'MEDICO') {
+        // Expanded search terms for headers
+        const nameIdx = headers.findIndex(h => h.includes('nome') || h.includes('profissional') || h.includes('medico'));
+        const cnsIdx = headers.findIndex(h => h.includes('cns') || h.includes('cartao') || h.includes('sus'));
+        
+        if (nameIdx === -1 || cnsIdx === -1) return {};
+
+        const lookup: Record<string, string> = {};
+        for (let i = 1; i < lines.length; i++) {
+           const cols = lines[i].split(delimiter).map(c => c.replace(/^"|"$/g, '').trim());
+           if (cols[nameIdx] && cols[cnsIdx]) {
+              const key = cleanKey(cols[nameIdx]);
+              const val = cols[cnsIdx].replace(/[^0-9]/g, ''); // Strict numeric CNS
+              if (key && val) lookup[key] = val;
+           }
+        }
+        return lookup;
+    } 
+    else if (type === 'PACIENTE') {
+        const nameIdx = headers.findIndex(h => h.includes('nome') || h.includes('paciente'));
+        // Look for address columns
+        const addrIdx = headers.findIndex(h => h.includes('endereco') || h.includes('logradouro') || h.includes('rua'));
+        
+        if (nameIdx === -1 || addrIdx === -1) return {};
+
+        const lookup: Record<string, string> = {};
+        for (let i = 1; i < lines.length; i++) {
+           const cols = lines[i].split(delimiter).map(c => c.replace(/^"|"$/g, '').trim());
+           if (cols[nameIdx] && cols[addrIdx]) {
+              const key = cols[nameIdx].toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+              const val = cols[addrIdx].toUpperCase().trim(); 
+              if (key && val) lookup[key] = val;
+           }
+        }
+        return lookup;
+    }
+
+    return {};
+  };
+
   const handleFetchFromUrl = async () => {
     setSheetError('');
     const id = extractSheetId(sheetUrl);
@@ -139,28 +222,53 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
     }
 
     setIsLoadingSheet(true);
+    setProfMedicoLookup({});
+    setPatientAddressLookup({});
 
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetTabName)}`;
+    const mainCsvUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetTabName)}`;
+    const doctorCsvUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=PROFISSIONAL_MEDICO`;
+    const patientCsvUrl = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=BD_USUARIO`;
 
     try {
-      const response = await fetch(csvUrl);
-      
-      if (!response.ok) {
-        throw new Error(`Erro HTTP: ${response.status}`);
-      }
-
+      // 1. Fetch Main Data
+      const response = await fetch(mainCsvUrl);
+      if (!response.ok) throw new Error(`Erro HTTP ao buscar dados principais: ${response.status}`);
       const text = await response.text();
       
-      if (text.toLowerCase().includes('<!doctype html>') || text.toLowerCase().includes('<html')) {
-         throw new Error('O Google bloqueou o acesso direto. Certifique-se que a planilha está compartilhada como "Qualquer pessoa com o link".');
+      if (text.toLowerCase().includes('<!doctype html>')) {
+         throw new Error('O Google bloqueou o acesso. A planilha deve estar "Pública na Web".');
       }
 
       setRawContent(text);
       processContent(text);
 
+      // 2. Fetch Doctor Lookup (PROFISSIONAL_MEDICO)
+      try {
+         const docResp = await fetch(doctorCsvUrl);
+         if (docResp.ok) {
+             const docText = await docResp.text();
+             if (!docText.toLowerCase().includes('<!doctype html>')) {
+                 const map = processLookupSheet(docText, 'MEDICO');
+                 setProfMedicoLookup(map);
+             }
+         }
+      } catch (e) { console.warn('Skipped Doctor Lookup', e); }
+
+      // 3. Fetch Patient Address Lookup (BD_USUARIO)
+      try {
+         const patResp = await fetch(patientCsvUrl);
+         if (patResp.ok) {
+             const patText = await patResp.text();
+             if (!patText.toLowerCase().includes('<!doctype html>')) {
+                 const map = processLookupSheet(patText, 'PACIENTE');
+                 setPatientAddressLookup(map);
+             }
+         }
+      } catch (e) { console.warn('Skipped Patient Lookup', e); }
+
     } catch (err: any) {
       console.error(err);
-      setSheetError('Falha ao carregar. Verifique se o NOME DA ABA está correto e se a planilha está pública (Qualquer pessoa com o link).');
+      setSheetError('Falha ao carregar. Verifique se o NOME DA ABA está correto e se a planilha está pública.');
     } finally {
       setIsLoadingSheet(false);
     }
@@ -178,6 +286,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
     else if (firstLine.includes(';')) delimiter = ';';
     
     const splitLine = (line: string) => {
+      // Basic split for preview
       if (delimiter === ',') {
         return line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.trim().replace(/^"|"$/g, ''));
       }
@@ -194,6 +303,9 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
     // Auto-map logic
     const newMapping = { ...mapping };
     
+    // Reset procedural prioritization flags
+    let proc1Assigned = false;
+
     headers.forEach((header, index) => {
       const h = header.toLowerCase()
         .normalize("NFD").replace(/[\u0300-\u036f]/g, "") 
@@ -211,15 +323,20 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
       
       if (h.includes('cbo') || h.includes('ocupacao')) newMapping.cbo = index;
       
-      if (h.includes('bpamedico') || h.includes('bpaenfermagem') || h.includes('bpatec')) {
-         newMapping.procedimento = index;
-      } else if (newMapping.procedimento === -1 && (h.includes('procedimento') || h.includes('cod') || h.includes('proc'))) {
-         newMapping.procedimento = index;
+      // Procedure Prioritization (MEDICO -> 1)
+      if (!proc1Assigned && h.includes('medico') && h.includes('bpa')) {
+          newMapping.procedimento = index;
+          proc1Assigned = true;
+      }
+
+      // If standard procedure header not found yet
+      if (newMapping.procedimento === -1 && !proc1Assigned) {
+         if (h.includes('cod') && h.includes('proc')) newMapping.procedimento = index;
+         else if (h.includes('procedimento')) newMapping.procedimento = index;
       }
 
       if (h.includes('datadenascimento') || h.includes('dtnasc')) {
          newMapping.data_nascimento = index;
-         // Sometimes age is derived, but let's map it if explicit
       }
       
       if (h.includes('idade')) newMapping.idade = index;
@@ -229,20 +346,38 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
       // BPA-I Specific
       if (h.includes('nome') && (h.includes('paciente') || h.includes('usuario') || h === 'nome')) newMapping.nome_paciente = index;
       
-      // CNS Paciente logic: often just "CNS" or "CNS PACIENTE". 
-      // If it contains "PROF", it is likely professional.
-      if (h.includes('cns') || h.includes('cartao')) {
-          if (h.includes('prof') || h.includes('medico')) {
+      // Nome Profissional vs CNS
+      if (h.includes('profissional') || (h.includes('medico') && !h.includes('bpa') && !h.includes('proc'))) {
+          if (h.includes('nome') || (!h.includes('cns') && !h.includes('cartao'))) {
+             newMapping.nome_profissional = index;
+          }
+          if (h.includes('cns') || h.includes('cartao')) {
              newMapping.cns_profissional = index;
-          } else {
+          }
+      }
+      // Fallback CNS detections
+      if (h.includes('cns') || h.includes('cartao')) {
+          if (h.includes('paciente')) {
              newMapping.cns_paciente = index;
+          } else if (newMapping.cns_profissional === -1) {
+             newMapping.cns_profissional = index;
           }
       }
 
+      // CPF Paciente (Fallback)
+      if (h.includes('cpf') && !h.includes('medico') && !h.includes('prof')) {
+        newMapping.cpf_paciente = index;
+      }
+      
       if (h.includes('sexo') || h.includes('genero')) newMapping.sexo = index;
       if (h.includes('raca') || h.includes('cor')) newMapping.raca = index;
       if (h.includes('municipio') || h.includes('ibge')) newMapping.ibge_municipio = index;
       if (h.includes('telefone') || h.includes('celular')) newMapping.telefone = index;
+      
+      // Address Mapping (Fixed: search for address terms, NOT cep)
+      if (h.includes('endereco') || h.includes('logradouro') || h.includes('rua')) {
+          newMapping.endereco_descr = index; 
+      }
     });
     
     setMapping(newMapping);
@@ -255,6 +390,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
       procedureHeaderName = detectedHeaders[mapping.procedimento];
     }
 
+    // 1. Parse New Items (with Lookup and Filtering by Competence)
     const newItems = parseMappedData(
       rawContent, 
       mapping, 
@@ -262,10 +398,15 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
       defaults, 
       shouldConsolidate,
       procedureHeaderName,
-      mode
+      mode,
+      profMedicoLookup, // Doctor Lookup
+      patientAddressLookup, // Patient Address Lookup
+      headerCompetencia // Pass filter value
     );
-    
-    onUpdateItems([...items, ...newItems]);
+
+    // 2. Merge items
+    const combinedItems = [...items, ...newItems];
+    onUpdateItems(combinedItems);
     
     setShowModal(false);
     setRawContent('');
@@ -325,6 +466,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
             <h2 className="text-lg font-semibold text-gray-800">Itens do {mode}</h2>
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <span>{items.length} registros</span>
+              {headerCompetencia && <span className="bg-yellow-100 text-yellow-800 px-1.5 rounded border border-yellow-200">Filtro: {headerCompetencia}</span>}
             </div>
           </div>
         </div>
@@ -389,7 +531,7 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
                 <th className="px-3 py-3 w-12">#</th>
                 <th className="px-3 py-3">CNES</th>
                 <th className="px-3 py-3">Comp.</th>
-                {mode === 'BPA-I' && <th className="px-3 py-3 text-purple-700">CNS Prof.</th>}
+                {mode === 'BPA-I' && <th className="px-3 py-3 text-purple-700 min-w-[140px]">Profissional (Nome/CNS)</th>}
                 <th className="px-3 py-3">CBO</th>
                 <th className="px-3 py-3">Procedimento</th>
                 {mode === 'BPA-I' && (
@@ -413,7 +555,10 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
                   
                   {mode === 'BPA-I' && (
                       <td className="px-1 py-1 bg-purple-50/30">
-                          <input type="text" value={item.cns_profissional || ''} onChange={(e) => handleEditItem(idx, 'cns_profissional', e.target.value)} className="w-full bg-transparent border-none text-xs font-mono text-purple-800" placeholder="Obrigatório"/>
+                           <div className="flex flex-col gap-1">
+                              <input type="text" value={item.nome_profissional || ''} onChange={(e) => handleEditItem(idx, 'nome_profissional', e.target.value)} className="w-full bg-transparent border-none text-[10px] text-purple-600 placeholder-purple-300" placeholder="Nome Prof."/>
+                              <input type="text" value={item.cns_profissional || ''} onChange={(e) => handleEditItem(idx, 'cns_profissional', e.target.value)} className="w-full bg-transparent border-none text-xs font-mono text-purple-800 font-bold" placeholder="CNS"/>
+                           </div>
                       </td>
                   )}
 
@@ -463,7 +608,6 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
               
               {step === 1 && (
                 <div className="flex flex-col h-full space-y-6">
-                  {/* ... (Keep existing Source selection) ... */}
                   <div className="flex rounded-lg bg-gray-200 p-1 self-start">
                      <button onClick={() => setImportMethod('url')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${importMethod === 'url' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>Link Google Sheets</button>
                      <button onClick={() => setImportMethod('paste')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${importMethod === 'paste' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>Colar Dados</button>
@@ -475,7 +619,27 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
                             <input type="text" value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." className="w-full rounded-md border border-gray-300 px-3 py-2"/>
                             <input type="text" value={sheetTabName} onChange={(e) => setSheetTabName(e.target.value)} placeholder="Ex: BD_PROCEDIMENTO" className="w-full rounded-md border border-gray-300 px-3 py-2"/>
                         </div>
+                        <div className="text-xs text-gray-500 bg-blue-50 p-2 rounded">
+                           💡 Dica: O sistema buscará automaticamente as abas "PROFISSIONAL_MEDICO" e "BD_USUARIO" para preenchimento de dados.
+                        </div>
                         {sheetError && <div className="text-red-600 text-sm">{sheetError}</div>}
+                        <div className="flex gap-4">
+                            {Object.keys(profMedicoLookup).length > 0 && (
+                            <div className="text-green-600 text-sm flex items-center gap-1">
+                                <Check className="w-4 h-4"/> {Object.keys(profMedicoLookup).length} médicos carregados.
+                            </div>
+                            )}
+                            {Object.keys(patientAddressLookup).length > 0 && (
+                            <div className="text-green-600 text-sm flex items-center gap-1">
+                                <Check className="w-4 h-4"/> {Object.keys(patientAddressLookup).length} endereços carregados.
+                            </div>
+                            )}
+                        </div>
+                        {isLoadingSheet && (
+                           <div className="flex items-center gap-2 text-blue-600 text-sm">
+                             <Loader2 className="w-4 h-4 animate-spin" /> Carregando planilhas...
+                           </div>
+                        )}
                     </div>
                   )}
 
@@ -523,14 +687,31 @@ const DataInput: React.FC<Props> = ({ items, onUpdateItems, mode, onModeChange }
                             <>
                                 <div className="col-span-full h-px bg-gray-200 my-2"></div>
                                 <h5 className="col-span-full text-purple-700 font-bold text-xs uppercase">Dados do Paciente (BPA-I)</h5>
-                                <ColumnSelector label="CNS Profissional" field="cns_profissional" required />
+                                <div className="space-y-1 border-l-4 border-purple-200 pl-3 bg-purple-50/50 rounded-r py-2">
+                                   <ColumnSelector label="Nome do Profissional" field="nome_profissional" />
+                                   <ColumnSelector label="CNS Profissional" field="cns_profissional" required />
+                                   <p className="text-[10px] text-purple-600 mt-1">Se o CNS estiver vazio, o sistema tentará buscá-lo usando o Nome do Profissional.</p>
+                                </div>
                                 <ColumnSelector label="CNS Paciente" field="cns_paciente" required />
+                                <ColumnSelector label="CPF Paciente (Caso sem CNS)" field="cpf_paciente" />
                                 <ColumnSelector label="Nome Paciente" field="nome_paciente" required />
                                 <ColumnSelector label="Data Nascimento" field="data_nascimento" required />
                                 <ColumnSelector label="Sexo (M/F)" field="sexo" required />
                                 <ColumnSelector label="Raça/Cor (Cod)" field="raca" />
                                 <ColumnSelector label="IBGE Município" field="ibge_municipio" />
                                 <ColumnSelector label="Telefone" field="telefone" />
+                                
+                                <div className="col-span-full h-px bg-gray-200 my-2"></div>
+                                <h5 className="col-span-full text-purple-700 font-bold text-xs uppercase">Endereço</h5>
+                                <ColumnSelector label="Endereço (Logradouro)" field="endereco_descr" /> 
+                                <div className="col-span-full flex gap-4 bg-purple-50 p-3 rounded">
+                                    <div className="text-xs text-purple-800">
+                                        <strong>Valores Padrão Ativos:</strong><br/>
+                                        CEP: {defaults.cep}<br/>
+                                        Bairro: {defaults.endereco_bairro}<br/>
+                                        Endereço: {Object.keys(patientAddressLookup).length > 0 ? 'Busca Automática na aba BD_USUARIO' : 'Mapeie ou Digite'}
+                                    </div>
+                                </div>
                             </>
                         )}
                      </div>

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import HeaderForm from './components/HeaderForm';
 import DataInput from './components/DataInput';
@@ -111,6 +110,7 @@ const App: React.FC = () => {
               onUpdateItems={setItems}
               mode={mode}
               onModeChange={setMode}
+              headerCompetencia={headerData.competencia}
             />
           </div>
         </div>

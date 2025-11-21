@@ -22,6 +22,7 @@ export interface BpaItem {
   origem: string;
 
   // BPA-I Specific Fields (Optional for BPA-C)
+  nome_profissional?: string; // Added for UI reference and lookup
   cns_profissional?: string; // 15 digits
   data_atendimento?: string; // AAAAMMDD
   cns_paciente?: string; // 15 digits
@@ -60,9 +61,11 @@ export interface ColumnMapping {
   origem: number;
 
   // BPA-I Mappings
+  nome_profissional: number; // Added
   cns_profissional: number;
   data_atendimento: number;
   cns_paciente: number;
+  cpf_paciente: number; // Fallback for CNS
   sexo: number;
   ibge_municipio: number;
   cid: number;
